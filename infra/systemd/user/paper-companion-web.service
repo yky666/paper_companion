@@ -1,0 +1,16 @@
+[Unit]
+Description=Paper Companion Next.js web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data2/yangky/test/paper_companion
+Environment=NODE_ENV=production
+EnvironmentFile=-/data2/yangky/test/paper_companion/.env
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

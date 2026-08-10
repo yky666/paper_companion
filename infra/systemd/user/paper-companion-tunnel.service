@@ -1,0 +1,14 @@
+[Unit]
+Description=Paper Companion Cloudflare named tunnel
+After=network-online.target paper-companion-web.service
+Wants=network-online.target paper-companion-web.service
+
+[Service]
+Type=simple
+EnvironmentFile=/data2/yangky/test/paper_companion/.env
+ExecStart=/home/s/.local/bin/cloudflared tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
