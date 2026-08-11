@@ -6,7 +6,7 @@ Wants=network-online.target paper-companion-web.service
 [Service]
 Type=simple
 EnvironmentFile=/data2/yangky/test/paper_companion/.env
-ExecStart=/home/s/.local/bin/cloudflared tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+ExecStart=/usr/bin/bash -lc 'exec /home/s/.local/bin/cloudflared tunnel --no-autoupdate run --token "$CLOUDFLARE_TUNNEL_TOKEN"'
 Restart=always
 RestartSec=5
 
