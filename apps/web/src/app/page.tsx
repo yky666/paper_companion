@@ -14,19 +14,6 @@ function cleanTitle(fileName: string) {
   return fileName.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() || "Untitled paper";
 }
 
-function makeReport(title: string, field: string): Report {
-  return {
-    背景与问题: `《${title}》被归入「${field}」方向。当前演示版会先根据文件名与领域生成报告骨架；后续接入 PDF 解析和 Ollama 后，会替换为基于全文、图表和引用页码的真实分析。`,
-    创新点: "可能的创新点包括问题定义、模型结构、训练策略、数据构造或实验评估方式。正式版会从摘要、引言、方法和消融实验中提取证据。",
-    核心方法: "方法部分会被拆成输入、模型/算法、训练目标、推理流程和复杂度五块，并尽量关联论文中的关键图表。",
-    实验结果: "实验结果将优先总结主表、消融实验、可视化结果和与 baseline 的对比，同时标记数据集、指标和显著性风险。",
-    优劣势: "优势会关注新颖性、有效性、可复现性和工程价值；局限会关注假设条件、数据偏差、算力成本和泛化边界。",
-    应用场景: `结合「${field}」方向，适合进一步评估在科研阅读、复现选题、课程汇报和工程原型中的使用价值。`,
-    个性化建议: "建议先读摘要、引言图、方法总览图和实验主表；如果目标是复现，优先检查代码、数据、训练配置和硬件需求。",
-    复现难度: "当前估计为中等。正式版会根据开源代码、数据可得性、模型规模、训练时长和依赖复杂度给出更细评分。",
-  };
-}
-
 function reportMarkdown(title: string, field: string, report: Report) {
   return [`# ${title}`, "", `领域分区：${field}`, "", ...reportSections.flatMap((section) => [`## ${section}`, "", report[section], ""])].join("\n");
 }
@@ -59,6 +46,7 @@ export default function Home() {
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisMeta, setAnalysisMeta] = useState("");
+  const [analysisError, setAnalysisError] = useState("");
 
   const currentView = useMemo(() => {
     if (activeNav === "领域分区") return `当前分区：${selectedField}`;
@@ -87,6 +75,7 @@ export default function Home() {
     setVideoUrl(null);
     setVideoBlob(null);
     setAnalysisMeta("");
+    setAnalysisError("");
     setIsAnalyzing(true);
     setTaskStatus("正在解析 PDF 并调用 Ollama");
     setActiveNav("分析任务");
@@ -111,9 +100,10 @@ export default function Home() {
       showToast("真实分析报告已生成", `已使用 ${data.model} 完成论文结构化分析。`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "未知错误";
-      setReport(makeReport(title, selectedField));
-      setAnalysisMeta("真实分析失败，当前显示保底模板");
-      setTaskStatus("真实分析失败：已回退到模板报告");
+      setReport(null);
+      setAnalysisMeta("真实分析失败，未生成模板报告");
+      setAnalysisError(message);
+      setTaskStatus("真实分析失败：请查看错误信息");
       showToast("真实分析失败", message);
     } finally {
       setIsAnalyzing(false);
@@ -300,6 +290,14 @@ export default function Home() {
                 <h3 className="mt-2 text-xl font-semibold">{selectedSection}</h3>
                 <p className="mt-4 leading-8 text-[#344054]">{report[selectedSection]}</p>
               </article>
+            </div>
+          ) : null}
+
+          {analysisError ? (
+            <div className="rounded-lg border border-[#f1b8b8] bg-[#fff7f7] p-6">
+              <h2 className="text-base font-semibold text-[#b42318]">真实分析失败</h2>
+              <p className="mt-3 break-words text-sm leading-6 text-[#7a271a]">{analysisError}</p>
+              <p className="mt-3 text-sm text-[#536170]">这条信息来自后端 `/api/analyze`，没有使用模板伪装结果。</p>
             </div>
           ) : null}
 
