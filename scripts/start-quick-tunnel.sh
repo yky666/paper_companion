@@ -19,7 +19,7 @@ fi
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 : > "$TUNNEL_LOG"
 tmux new-session -d -s "$SESSION_NAME" \
-  "$HOME/.local/bin/cloudflared tunnel --url http://127.0.0.1:3000 --no-autoupdate 2>&1 | tee $TUNNEL_LOG"
+  "$HOME/.local/bin/cloudflared tunnel --protocol http2 --url http://127.0.0.1:3000 --no-autoupdate 2>&1 | tee $TUNNEL_LOG"
 
 echo "Waiting for Cloudflare Quick Tunnel URL..."
 for _ in {1..30}; do
