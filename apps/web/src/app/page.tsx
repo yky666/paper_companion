@@ -57,6 +57,8 @@ export default function Home() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisMeta, setAnalysisMeta] = useState("");
 
   const currentView = useMemo(() => {
     if (activeNav === "领域分区") return `当前分区：${selectedField}`;
@@ -71,20 +73,51 @@ export default function Home() {
     window.setTimeout(() => setToast(null), 3200);
   }
 
-  function acceptFile(file?: File) {
+  async function acceptFile(file?: File) {
     if (!file) return;
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
       showToast("文件格式不支持", "MVP 第一版只接收 PDF 文件。");
       return;
     }
+
     const title = cleanTitle(file.name);
-    const nextReport = makeReport(title, selectedField);
     setSelectedFile(file);
     setPaperTitle(title);
-    setReport(nextReport);
-    setTaskStatus("报告已生成：可查看与导出");
+    setReport(null);
+    setVideoUrl(null);
+    setVideoBlob(null);
+    setAnalysisMeta("");
+    setIsAnalyzing(true);
+    setTaskStatus("正在解析 PDF 并调用 Ollama");
     setActiveNav("分析任务");
-    showToast("分析报告已生成", "当前为前端演示分析；下一步会接入真实 PDF 解析和 Ollama。");
+    showToast("开始真实分析", "服务端正在抽取 PDF 文本并调用本地 Ollama 模型。");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("field", selectedField);
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "分析失败");
+
+      setPaperTitle(data.title ?? title);
+      setReport(data.report);
+      setAnalysisMeta(`模型 ${data.model}，抽取 ${data.extractedChars} 字符`);
+      setTaskStatus("真实报告已生成：可查看与导出");
+      showToast("真实分析报告已生成", `已使用 ${data.model} 完成论文结构化分析。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      setReport(makeReport(title, selectedField));
+      setAnalysisMeta("真实分析失败，当前显示保底模板");
+      setTaskStatus("真实分析失败：已回退到模板报告");
+      showToast("真实分析失败", message);
+    } finally {
+      setIsAnalyzing(false);
+    }
   }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -221,8 +254,8 @@ export default function Home() {
               <div className={`flex min-h-52 items-center justify-center rounded-lg border border-dashed ${dragging ? "border-[#1f6feb] bg-[#eef5ff]" : "border-[#aeb7c2] bg-[#fafbfc]"}`} onDragLeave={() => setDragging(false)} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDrop={onDrop}>
                 <div className="text-center">
                   <p className="text-base font-medium">{selectedFile ? selectedFile.name : "拖拽 PDF 到这里"}</p>
-                  <p className="mt-2 text-sm text-[#536170]">{selectedFile ? `大小 ${(selectedFile.size / 1024 / 1024).toFixed(2)} MB，分区 ${selectedField}` : "或点击上传，随后生成演示分析报告"}</p>
-                  <button className="mt-5 h-10 rounded-md bg-[#1f6feb] px-5 text-sm font-medium text-white" onClick={() => fileInputRef.current?.click()}>选择文件</button>
+                  <p className="mt-2 text-sm text-[#536170]">{selectedFile ? `大小 ${(selectedFile.size / 1024 / 1024).toFixed(2)} MB，分区 ${selectedField}` : "或点击上传，随后服务端解析 PDF 并调用 Ollama"}</p>
+                  <button className="mt-5 h-10 rounded-md bg-[#1f6feb] px-5 text-sm font-medium text-white disabled:bg-[#93b7f4]" disabled={isAnalyzing} onClick={() => fileInputRef.current?.click()}>{isAnalyzing ? "分析中" : "选择文件"}</button>
                 </div>
               </div>
             </div>
@@ -242,7 +275,7 @@ export default function Home() {
 
           <div className="grid grid-cols-3 gap-6">
             <div className="rounded-lg border border-[#d9dde3] bg-white p-5"><p className="text-sm text-[#536170]">任务状态</p><p className="mt-2 text-xl font-semibold">{taskStatus}</p></div>
-            <div className="rounded-lg border border-[#d9dde3] bg-white p-5"><p className="text-sm text-[#536170]">模型服务</p><p className="mt-2 text-2xl font-semibold">Ollama local</p></div>
+            <div className="rounded-lg border border-[#d9dde3] bg-white p-5"><p className="text-sm text-[#536170]">模型服务</p><p className="mt-2 text-2xl font-semibold">Ollama local</p>{analysisMeta ? <p className="mt-2 text-sm text-[#536170]">{analysisMeta}</p> : null}</div>
             <div className="rounded-lg border border-[#d9dde3] bg-white p-5">
               <p className="text-sm text-[#536170]">导出格式</p>
               <div className="mt-3 flex gap-2">
