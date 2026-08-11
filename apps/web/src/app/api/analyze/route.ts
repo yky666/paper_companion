@@ -20,6 +20,10 @@ const reportSections = [
 ] as const;
 
 type Report = Record<(typeof reportSections)[number], string>;
+type EvidenceItem = {
+  label: string;
+  text: string;
+};
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -30,6 +34,33 @@ function cleanTitle(fileName: string) {
 
 function truncateForPrompt(text: string, limit = 12000) {
   return text.replace(/\s+/g, " ").slice(0, limit);
+}
+
+function extractEvidence(text: string): EvidenceItem[] {
+  const keywords =
+    /(BLEU|ROUGE|accuracy|Acc\.?|mAP|IoU|F1|AUC|AP50|AP75|WER|CER|CIDEr|METEOR|Recall|Precision|PSNR|SSIM|benchmark|dataset|WMT|COCO|ImageNet|ablation|消融|数据集|指标|准确率|精度|召回|实验|基准)/i;
+  const numberPattern = /(\d+(?:\.\d+)?\s?%?|\d+\.\d+)/;
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => line.length >= 30 && line.length <= 360);
+
+  const seen = new Set<string>();
+  const evidence: EvidenceItem[] = [];
+
+  for (const line of lines) {
+    if (!keywords.test(line) || !numberPattern.test(line)) continue;
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    evidence.push({
+      label: line.match(keywords)?.[0] ?? "metric",
+      text: line,
+    });
+    if (evidence.length >= 16) break;
+  }
+
+  return evidence;
 }
 
 async function extractPdfText(file: File) {
@@ -170,16 +201,22 @@ ${raw.slice(0, 6000)}
   return { raw, modelSuffix: "" };
 }
 
-async function generateFullReport(title: string, field: string, paperText: string, models: string[]) {
+async function generateFullReport(title: string, field: string, paperText: string, evidence: EvidenceItem[], models: string[]) {
+  const evidenceText = evidence.length
+    ? evidence.map((item, index) => `${index + 1}. [${item.label}] ${item.text}`).join("\n")
+    : "未从文本中自动提取到明确指标句。";
   const prompt = `
 你是严谨的中文科研论文分析助手。请基于论文文本生成结构化分析。
 
 要求：
 1. 必须基于论文文本中真实出现的信息。
 2. 如果文本没有充分证据，请明确写“文本中未充分提供”，不要编造。
-3. 每节 80 到 160 字。
+3. 每节 180 到 320 字，分析要具体，不要泛泛而谈。
 4. 即使论文原文是英文，也必须全部使用中文输出。
-5. 必须严格使用以下标签输出，每个标签都要出现：
+5. “实验结果”必须尽量引用下方“自动提取的数据证据”里的数据集、指标、数值或对比。
+6. “核心方法”要拆出模型结构、输入输出、训练/推理流程。
+7. “优劣势”要分别写优势和局限。
+8. 必须严格使用以下标签输出，每个标签都要出现：
 ${reportSections.map((section) => `【${section}】`).join("\n")}
 
 不要输出 Markdown 表格，不要输出 JSON。
@@ -187,8 +224,11 @@ ${reportSections.map((section) => `【${section}】`).join("\n")}
 论文标题：${title}
 领域分区：${field}
 
+自动提取的数据证据：
+${evidenceText}
+
 论文文本节选：
-${truncateForPrompt(paperText, 7000)}
+${truncateForPrompt(paperText, 11000)}
 `;
 
   const errors: string[] = [];
@@ -243,8 +283,9 @@ ${truncateForPrompt(paperText, 9000)}
 
 async function analyzeWithOllama(title: string, field: string, paperText: string): Promise<{ report: Report; model: string; raw: string }> {
   const models = await getCandidateModels();
+  const evidence = extractEvidence(paperText);
   try {
-    return await generateFullReport(title, field, paperText, models);
+    return await generateFullReport(title, field, paperText, evidence, models);
   } catch {
     const entries: Array<[string, string]> = [];
     const usedModels = new Set<string>();
@@ -286,12 +327,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "PDF text extraction produced too little text. Scanned PDFs need OCR support." }, { status: 422 });
     }
 
+    const evidence = extractEvidence(text);
     const analysis = await analyzeWithOllama(title, field, text);
     return NextResponse.json({
       title,
       field,
       extractedChars: text.length,
       model: analysis.model,
+      evidence,
       report: analysis.report,
     });
   } catch (error) {

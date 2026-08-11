@@ -9,13 +9,17 @@ const reportSections = ["背景与问题", "创新点", "核心方法", "实验�
 
 type Toast = { title: string; detail: string };
 type Report = Record<string, string>;
+type EvidenceItem = { label: string; text: string };
 
 function cleanTitle(fileName: string) {
   return fileName.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() || "Untitled paper";
 }
 
-function reportMarkdown(title: string, field: string, report: Report) {
-  return [`# ${title}`, "", `领域分区：${field}`, "", ...reportSections.flatMap((section) => [`## ${section}`, "", report[section], ""])].join("\n");
+function reportMarkdown(title: string, field: string, report: Report, evidence: EvidenceItem[]) {
+  const evidenceBlock = evidence.length
+    ? ["## 自动提取的数据证据", "", ...evidence.map((item, index) => `${index + 1}. **${item.label}**: ${item.text}`), ""]
+    : [];
+  return [`# ${title}`, "", `领域分区：${field}`, "", ...evidenceBlock, ...reportSections.flatMap((section) => [`## ${section}`, "", report[section], ""])].join("\n");
 }
 
 function downloadFile(name: string, type: string, content: string | Blob) {
@@ -47,6 +51,7 @@ export default function Home() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisMeta, setAnalysisMeta] = useState("");
   const [analysisError, setAnalysisError] = useState("");
+  const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
 
   const currentView = useMemo(() => {
     if (activeNav === "领域分区") return `当前分区：${selectedField}`;
@@ -76,6 +81,7 @@ export default function Home() {
     setVideoBlob(null);
     setAnalysisMeta("");
     setAnalysisError("");
+    setEvidence([]);
     setIsAnalyzing(true);
     setTaskStatus("正在解析 PDF 并调用 Ollama");
     setActiveNav("分析任务");
@@ -95,6 +101,7 @@ export default function Home() {
 
       setPaperTitle(data.title ?? title);
       setReport(data.report);
+      setEvidence(data.evidence ?? []);
       setAnalysisMeta(`模型 ${data.model}，抽取 ${data.extractedChars} 字符`);
       setTaskStatus("真实报告已生成：可查看与导出");
       showToast("真实分析报告已生成", `已使用 ${data.model} 完成论文结构化分析。`);
@@ -122,17 +129,20 @@ export default function Home() {
 
   function exportMarkdown() {
     if (!report) return showToast("还没有报告", "请先上传 PDF 生成分析报告。");
-    downloadFile(`${paperTitle || "paper-report"}.md`, "text/markdown;charset=utf-8", reportMarkdown(paperTitle, selectedField, report));
+    downloadFile(`${paperTitle || "paper-report"}.md`, "text/markdown;charset=utf-8", reportMarkdown(paperTitle, selectedField, report, evidence));
     showToast("Markdown 已导出", "浏览器已开始下载 .md 文件。");
   }
 
   function exportHtml() {
     if (!report) return showToast("还没有报告", "请先上传 PDF 生成分析报告。");
+    const evidenceHtml = evidence.length
+      ? `<h2>自动提取的数据证据</h2><ol>${evidence.map((item) => `<li><strong>${item.label}</strong>: ${item.text}</li>`).join("")}</ol>`
+      : "";
     const body = reportSections.map((section) => `<h2>${section}</h2><p>${report[section]}</p>`).join("");
     downloadFile(
       `${paperTitle || "paper-report"}.html`,
       "text/html;charset=utf-8",
-      `<!doctype html><html lang="zh"><meta charset="utf-8"><title>${paperTitle}</title><body><h1>${paperTitle}</h1><p>领域分区：${selectedField}</p>${body}</body></html>`,
+      `<!doctype html><html lang="zh"><meta charset="utf-8"><title>${paperTitle}</title><body><h1>${paperTitle}</h1><p>领域分区：${selectedField}</p>${evidenceHtml}${body}</body></html>`,
     );
     showToast("HTML 已导出", "浏览器已开始下载 .html 文件。");
   }
@@ -155,10 +165,10 @@ export default function Home() {
     recorder.ondataavailable = (event) => chunks.push(event.data);
     recorder.start();
 
-    const slides = reportSections.slice(0, 5);
+    const slides = reportSections;
     let frame = 0;
     const timer = window.setInterval(() => {
-      const slide = slides[Math.floor(frame / 72) % slides.length];
+      const slide = slides[Math.min(Math.floor(frame / 168), slides.length - 1)];
       ctx.fillStyle = "#f6f7f9";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#1f6feb";
@@ -176,7 +186,7 @@ export default function Home() {
       frame += 1;
     }, 1000 / 24);
 
-    await new Promise((resolve) => window.setTimeout(resolve, 5600));
+    await new Promise((resolve) => window.setTimeout(resolve, slides.length * 7000));
     window.clearInterval(timer);
     recorder.stop();
     await new Promise((resolve) => {
@@ -290,6 +300,24 @@ export default function Home() {
                 <h3 className="mt-2 text-xl font-semibold">{selectedSection}</h3>
                 <p className="mt-4 leading-8 text-[#344054]">{report[selectedSection]}</p>
               </article>
+            </div>
+          ) : null}
+
+          {evidence.length ? (
+            <div className="rounded-lg border border-[#d9dde3] bg-white p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-base font-semibold">自动提取的数据证据</h2>
+                <span className="text-sm text-[#536170]">{evidence.length} 条指标/实验相关句</span>
+              </div>
+              <div className="space-y-2">
+                {evidence.slice(0, 10).map((item, index) => (
+                  <div className="rounded-md border border-[#e1e5ea] px-3 py-2 text-sm" key={`${item.label}-${index}`}>
+                    <span className="font-medium text-[#174ea6]">{item.label}</span>
+                    <span className="mx-2 text-[#8792a0]">·</span>
+                    <span className="text-[#344054]">{item.text}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
 
