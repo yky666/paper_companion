@@ -57,10 +57,59 @@ function extractEvidence(text: string): EvidenceItem[] {
       label: line.match(keywords)?.[0] ?? "metric",
       text: line,
     });
-    if (evidence.length >= 16) break;
+    if (evidence.length >= 28) break;
   }
 
   return evidence;
+}
+
+function sliceAround(text: string, patterns: RegExp[], limit = 2600) {
+  const normalized = text.replace(/\r/g, "");
+  const lower = normalized.toLowerCase();
+  let best = -1;
+  for (const pattern of patterns) {
+    const match = lower.match(pattern);
+    if (match?.index !== undefined) {
+      best = match.index;
+      break;
+    }
+  }
+  if (best < 0) return "";
+  const start = Math.max(0, best - 600);
+  return normalized.slice(start, start + limit).replace(/\s+/g, " ").trim();
+}
+
+function buildPaperDossier(text: string, evidence: EvidenceItem[]) {
+  const normalized = text.replace(/\s+/g, " ");
+  const abstract = sliceAround(text, [/abstract/i, /摘要/], 2600) || normalized.slice(0, 2600);
+  const introduction = sliceAround(text, [/introduction/i, /引言/], 2600);
+  const method = sliceAround(text, [/method/i, /approach/i, /model architecture/i, /方法/], 3400);
+  const experiment = sliceAround(text, [/experiment/i, /evaluation/i, /results/i, /实验/], 4200);
+  const conclusion = sliceAround(text, [/conclusion/i, /discussion/i, /结论/], 2200);
+  const tail = normalized.slice(Math.max(0, normalized.length - 2200));
+  const evidenceText = evidence.length
+    ? evidence.map((item, index) => `${index + 1}. [${item.label}] ${item.text}`).join("\n")
+    : "未从文本中自动提取到明确指标句。";
+
+  return `
+【摘要/开头】
+${abstract}
+
+【引言附近】
+${introduction || "未定位到引言片段。"}
+
+【方法附近】
+${method || "未定位到方法片段。"}
+
+【实验/结果附近】
+${experiment || "未定位到实验片段。"}
+
+【结论/末尾】
+${conclusion || tail}
+
+【自动提取的数据证据】
+${evidenceText}
+`.slice(0, 18000);
 }
 
 async function extractPdfText(file: File) {
@@ -125,8 +174,8 @@ async function callOllama(model: string, prompt: string, useJson = false) {
       ...(useJson ? { format: "json" } : {}),
       options: {
         temperature: 0.15,
-        num_ctx: 4096,
-        num_predict: 1600,
+        num_ctx: 8192,
+        num_predict: 3200,
       },
     }),
   });
@@ -145,20 +194,45 @@ function parseSectionedReport(raw: string): Report {
   for (let index = 0; index < reportSections.length; index += 1) {
     const section = reportSections[index];
     const next = reportSections[index + 1];
-    const start = raw.indexOf(`【${section}】`);
+    const xmlMatch = raw.match(new RegExp(`<\\s*${section}\\s*>([\\s\\S]*?)<\\s*\\/\\s*${section}\\s*>`));
+    if (xmlMatch?.[1]) {
+      report[section] = cleanModelText(xmlMatch[1]);
+      continue;
+    }
+
+    const startTokens = [`【${section}】`, `<${section}>`, `${section}：`, `${section}:`];
+    const start = findFirstIndex(raw, startTokens);
     if (start < 0) continue;
-    const contentStart = start + section.length + 2;
-    const end = next ? raw.indexOf(`【${next}】`, contentStart) : raw.length;
+    const matchedToken = startTokens.find((token) => raw.indexOf(token) === start) ?? `【${section}】`;
+    const contentStart = start + matchedToken.length;
+    const nextTokens = next ? [`【${next}】`, `<${next}>`, `${next}：`, `${next}:`] : [];
+    const end = next ? findFirstIndex(raw, nextTokens, contentStart) : raw.length;
     const value = cleanModelText(raw.slice(contentStart, end < 0 ? raw.length : end));
     if (value) report[section] = value;
   }
 
+  const plainChunks = splitPlainOutput(raw);
   return Object.fromEntries(
-    reportSections.map((section) => [
-      section,
-      report[section] || `模型未按指定格式返回「${section}」。原始输出片段：${raw.slice(0, 360)}`,
-    ]),
+    reportSections.map((section, index) => [section, report[section] || plainChunks[index] || "该部分在模型输出中未充分展开，请重新生成。"]),
   ) as Report;
+}
+
+function findFirstIndex(text: string, tokens: string[], fromIndex = 0) {
+  let best = -1;
+  for (const token of tokens) {
+    const index = text.indexOf(token, fromIndex);
+    if (index >= 0 && (best < 0 || index < best)) best = index;
+  }
+  return best;
+}
+
+function splitPlainOutput(raw: string) {
+  return raw
+    .replace(/<[^>]+>/g, "\n")
+    .split(/\n{2,}|(?=【[^】]+】)/)
+    .map(cleanModelText)
+    .filter((chunk) => chunk.length > 40 && !chunk.includes("模型未按指定格式返回"))
+    .slice(0, reportSections.length);
 }
 
 function cleanModelText(text: string) {
@@ -202,33 +276,25 @@ ${raw.slice(0, 6000)}
 }
 
 async function generateFullReport(title: string, field: string, paperText: string, evidence: EvidenceItem[], models: string[]) {
-  const evidenceText = evidence.length
-    ? evidence.map((item, index) => `${index + 1}. [${item.label}] ${item.text}`).join("\n")
-    : "未从文本中自动提取到明确指标句。";
+  const dossier = buildPaperDossier(paperText, evidence);
   const prompt = `
-你是严谨的中文科研论文分析助手。请基于论文文本生成结构化分析。
+你是资深论文审稿人和科研导师。请先在心里阅读材料并归纳证据，再输出中文深度分析。
 
-要求：
-1. 必须基于论文文本中真实出现的信息。
-2. 如果文本没有充分证据，请明确写“文本中未充分提供”，不要编造。
-3. 每节 180 到 320 字，分析要具体，不要泛泛而谈。
-4. 即使论文原文是英文，也必须全部使用中文输出。
-5. “实验结果”必须尽量引用下方“自动提取的数据证据”里的数据集、指标、数值或对比。
-6. “核心方法”要拆出模型结构、输入输出、训练/推理流程。
-7. “优劣势”要分别写优势和局限。
-8. 必须严格使用以下标签输出，每个标签都要出现：
-${reportSections.map((section) => `【${section}】`).join("\n")}
-
-不要输出 Markdown 表格，不要输出 JSON。
+硬性要求：
+1. 只能基于材料里的信息推断，不要编造论文没有给出的数值。
+2. 不要写“模型未按指定格式返回”“原始输出片段”等系统话术。
+3. 每节 220 到 420 字，必须有具体对象、方法、数据或适用边界。
+4. “实验结果”必须引用自动提取的数据证据里的数据集/指标/数值/对比。
+5. “优劣势”必须分成“优势：...”和“局限：...”。
+6. “个性化建议”要面向正在做人工智能/科研阅读/复现选题的用户。
+7. 严格用下列 XML 标签包裹每节内容，不要 Markdown，不要 JSON：
+${reportSections.map((section) => `<${section}>...</${section}>`).join("\n")}
 
 论文标题：${title}
 领域分区：${field}
 
-自动提取的数据证据：
-${evidenceText}
-
-论文文本节选：
-${truncateForPrompt(paperText, 11000)}
+论文材料 dossier：
+${dossier}
 `;
 
   const errors: string[] = [];
