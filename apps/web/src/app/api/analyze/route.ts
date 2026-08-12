@@ -24,46 +24,80 @@ type EvidenceItem = {
   label: string;
   text: string;
 };
+type PdfAsset = {
+  type: "page_screenshot";
+  label: string;
+  page: number;
+  dataUrl: string;
+};
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 function cleanTitle(fileName: string) {
   return fileName.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ").trim() || "Untitled paper";
 }
 
-function truncateForPrompt(text: string, limit = 12000) {
+function truncateForPrompt(text: string, limit = 14000) {
   return text.replace(/\s+/g, " ").slice(0, limit);
+}
+
+function uniqueLines(text: string) {
+  const seen = new Set<string>();
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => line.length >= 24 && line.length <= 420)
+    .filter((line) => {
+      const key = line.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function extractEvidence(text: string): EvidenceItem[] {
   const keywords =
-    /(BLEU|ROUGE|accuracy|Acc\.?|mAP|IoU|F1|AUC|AP50|AP75|WER|CER|CIDEr|METEOR|Recall|Precision|PSNR|SSIM|benchmark|dataset|WMT|COCO|ImageNet|ablation|消融|数据集|指标|准确率|精度|召回|实验|基准)/i;
-  const numberPattern = /(\d+(?:\.\d+)?\s?%?|\d+\.\d+)/;
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter((line) => line.length >= 30 && line.length <= 360);
-
-  const seen = new Set<string>();
+    /(BLEU|ROUGE|accuracy|Acc\.?|mAP|IoU|F1|AUC|AP50|AP75|WER|CER|CIDEr|METEOR|Recall|Precision|PSNR|SSIM|benchmark|dataset|WMT|COCO|ImageNet|ablation|dataset|baseline|training|Table|Figure|消融|数据集|指标|准确率|精度|召回|实验|基准|表\s?\d|图\s?\d)/i;
+  const numberPattern = /(\d+(?:\.\d+)?\s?%?|\d+\.\d+|over\s+\d+|more than\s+\d+|超过\s*\d+)/i;
   const evidence: EvidenceItem[] = [];
 
-  for (const line of lines) {
+  for (const line of uniqueLines(text)) {
     if (!keywords.test(line) || !numberPattern.test(line)) continue;
-    const key = line.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
     evidence.push({
       label: line.match(keywords)?.[0] ?? "metric",
       text: line,
     });
-    if (evidence.length >= 28) break;
+    if (evidence.length >= 36) break;
   }
 
   return evidence;
 }
 
-function sliceAround(text: string, patterns: RegExp[], limit = 2600) {
+function extractFormulaEvidence(text: string): EvidenceItem[] {
+  const formulaPattern = /([=∑∏∫√≈≤≥→←↔⊙⊗αβγδλμσθ]|\\frac|\\sum|\\arg|softmax|loss|objective|equation|Eq\.|公式|损失函数|目标函数|符号)/i;
+  const result: EvidenceItem[] = [];
+  for (const line of uniqueLines(text)) {
+    if (!formulaPattern.test(line)) continue;
+    result.push({ label: line.match(formulaPattern)?.[0] ?? "formula", text: line });
+    if (result.length >= 18) break;
+  }
+  return result;
+}
+
+function extractSettingEvidence(text: string): EvidenceItem[] {
+  const settingPattern =
+    /(dataset|benchmark|baseline|training|epoch|batch|optimizer|learning rate|lr|GPU|NVIDIA|A100|V100|RTX|implementation|hyperparameter|ablation|数据集|基准|训练|轮次|批量|优化器|学习率|实验设置|超参数|消融)/i;
+  const result: EvidenceItem[] = [];
+  for (const line of uniqueLines(text)) {
+    if (!settingPattern.test(line)) continue;
+    result.push({ label: line.match(settingPattern)?.[0] ?? "setting", text: line });
+    if (result.length >= 24) break;
+  }
+  return result;
+}
+
+function sliceAround(text: string, patterns: RegExp[], limit = 3200) {
   const normalized = text.replace(/\r/g, "");
   const lower = normalized.toLowerCase();
   let best = -1;
@@ -75,44 +109,91 @@ function sliceAround(text: string, patterns: RegExp[], limit = 2600) {
     }
   }
   if (best < 0) return "";
-  const start = Math.max(0, best - 600);
+  const start = Math.max(0, best - 800);
   return normalized.slice(start, start + limit).replace(/\s+/g, " ").trim();
 }
 
-function buildPaperDossier(text: string, evidence: EvidenceItem[]) {
+function buildPaperDossier(text: string, evidence: EvidenceItem[], formulas: EvidenceItem[], settings: EvidenceItem[]) {
   const normalized = text.replace(/\s+/g, " ");
-  const abstract = sliceAround(text, [/abstract/i, /摘要/], 2600) || normalized.slice(0, 2600);
-  const introduction = sliceAround(text, [/introduction/i, /引言/], 2600);
-  const method = sliceAround(text, [/method/i, /approach/i, /model architecture/i, /方法/], 3400);
-  const experiment = sliceAround(text, [/experiment/i, /evaluation/i, /results/i, /实验/], 4200);
-  const conclusion = sliceAround(text, [/conclusion/i, /discussion/i, /结论/], 2200);
-  const tail = normalized.slice(Math.max(0, normalized.length - 2200));
+  const abstract = sliceAround(text, [/abstract/i, /摘要/], 3000) || normalized.slice(0, 3000);
+  const introduction = sliceAround(text, [/introduction/i, /引言/], 3000);
+  const method = sliceAround(text, [/method/i, /approach/i, /model architecture/i, /framework/i, /方法/], 4600);
+  const experiment = sliceAround(text, [/experiment/i, /evaluation/i, /results/i, /implementation/i, /实验/], 5200);
+  const conclusion = sliceAround(text, [/conclusion/i, /discussion/i, /结论/], 2600);
+  const tail = normalized.slice(Math.max(0, normalized.length - 2600));
   const evidenceText = evidence.length
     ? evidence.map((item, index) => `${index + 1}. [${item.label}] ${item.text}`).join("\n")
     : "未从文本中自动提取到明确指标句。";
+  const formulaText = formulas.length
+    ? formulas.map((item, index) => `${index + 1}. [${item.label}] ${item.text}`).join("\n")
+    : "未定位到明显公式/符号句，需从截图或原文人工复核。";
+  const settingText = settings.length
+    ? settings.map((item, index) => `${index + 1}. [${item.label}] ${item.text}`).join("\n")
+    : "未定位到明显实验设置句。";
 
   return `
-【摘要/开头】
-${abstract}
+【摘要附近】${abstract}
 
-【引言附近】
-${introduction || "未定位到引言片段。"}
+【引言附近】${introduction || "未定位到引言片段。"}
 
-【方法附近】
-${method || "未定位到方法片段。"}
+【方法附近】${method || "未定位到方法片段。"}
 
-【实验/结果附近】
-${experiment || "未定位到实验片段。"}
+【实验/结果附近】${experiment || "未定位到实验片段。"}
 
-【结论/末尾】
-${conclusion || tail}
+【结论/末尾】${conclusion || tail}
 
-【自动提取的数据证据】
-${evidenceText}
-`.slice(0, 18000);
+【自动提取的数据证据】${evidenceText}
+
+【公式与符号线索】${formulaText}
+
+【实验设置线索】${settingText}
+`.slice(0, 22000);
 }
 
-async function extractPdfText(file: File) {
+async function pageCount(pdfPath: string) {
+  try {
+    const { stdout } = await execFileAsync("pdfinfo", [pdfPath], { timeout: 15_000, maxBuffer: 1024 * 1024 });
+    const match = stdout.match(/^Pages:\s+(\d+)/m);
+    return match ? Number(match[1]) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+async function renderKeyPages(pdfPath: string, workDir: string): Promise<PdfAsset[]> {
+  const pages = Math.max(1, await pageCount(pdfPath));
+  const candidates = [
+    { page: 1, label: "首页/标题页" },
+    { page: Math.max(1, Math.round(pages * 0.35)), label: "方法候选页" },
+    { page: Math.max(1, Math.round(pages * 0.7)), label: "实验候选页" },
+    { page: pages, label: "结论/附录候选页" },
+  ];
+  const unique = candidates.filter((item, index, arr) => arr.findIndex((other) => other.page === item.page) === index);
+  const assets: PdfAsset[] = [];
+
+  for (const item of unique.slice(0, 4)) {
+    const prefix = path.join(workDir, `page-${item.page}`);
+    try {
+      await execFileAsync("pdftoppm", ["-f", String(item.page), "-singlefile", "-png", "-r", "100", pdfPath, prefix], {
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024 * 4,
+      });
+      const buffer = await readFile(`${prefix}.png`);
+      assets.push({
+        type: "page_screenshot",
+        label: item.label,
+        page: item.page,
+        dataUrl: `data:image/png;base64,${buffer.toString("base64")}`,
+      });
+    } catch (error) {
+      console.warn(`Failed to render PDF page ${item.page}:`, error);
+    }
+  }
+
+  return assets;
+}
+
+async function processPdf(file: File) {
   const workDir = await mkdtemp(path.join(tmpdir(), "paper-companion-"));
   const pdfPath = path.join(workDir, `${randomUUID()}.pdf`);
   const textPath = path.join(workDir, "paper.txt");
@@ -121,11 +202,11 @@ async function extractPdfText(file: File) {
     const bytes = Buffer.from(await file.arrayBuffer());
     await writeFile(pdfPath, bytes);
     await execFileAsync("pdftotext", ["-layout", "-enc", "UTF-8", pdfPath, textPath], {
-      timeout: 45_000,
-      maxBuffer: 1024 * 1024 * 20,
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024 * 32,
     });
-    const text = await readFile(textPath, "utf8");
-    return text.trim();
+    const [text, assets] = await Promise.all([readFile(textPath, "utf8"), renderKeyPages(pdfPath, workDir)]);
+    return { text: text.trim(), assets };
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
@@ -141,7 +222,7 @@ async function getOllamaModel() {
     });
     const data = await response.json();
     const names = (data.models ?? []).map((model: { name: string }) => model.name);
-    return names.find((name: string) => name.includes("gemma3:4b")) ?? names[0] ?? "gemma3:4b";
+    return names.find((name: string) => name.includes("gemma3:12b")) ?? names.find((name: string) => name.includes("gemma3:4b")) ?? names[0] ?? "gemma3:4b";
   } catch {
     return "gemma3:4b";
   }
@@ -155,7 +236,7 @@ async function getCandidateModels() {
     const response = await fetch(`${base}/api/tags`, { cache: "no-store" });
     const data = await response.json();
     const available = (data.models ?? []).map((model: { name: string }) => model.name) as string[];
-    const preferred = [configured, "gemma3:4b", "gemma3:1b", "gemma3:12b"];
+    const preferred = [configured, "gemma3:12b", "gemma3:4b", "gemma3:1b"];
     return [...new Set(preferred.filter((name) => available.includes(name)))];
   } catch {
     return [configured];
@@ -173,9 +254,9 @@ async function callOllama(model: string, prompt: string, useJson = false) {
       stream: false,
       ...(useJson ? { format: "json" } : {}),
       options: {
-        temperature: 0.15,
+        temperature: 0.12,
         num_ctx: 8192,
-        num_predict: 3200,
+        num_predict: 5200,
       },
     }),
   });
@@ -188,24 +269,28 @@ async function callOllama(model: string, prompt: string, useJson = false) {
   return String(data.response ?? "");
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function parseSectionedReport(raw: string): Report {
   const report: Partial<Report> = {};
 
   for (let index = 0; index < reportSections.length; index += 1) {
     const section = reportSections[index];
     const next = reportSections[index + 1];
-    const xmlMatch = raw.match(new RegExp(`<\\s*${section}\\s*>([\\s\\S]*?)<\\s*\\/\\s*${section}\\s*>`));
+    const xmlMatch = raw.match(new RegExp(`<\\s*${escapeRegExp(section)}\\s*>([\\s\\S]*?)<\\s*\\/\\s*${escapeRegExp(section)}\\s*>`));
     if (xmlMatch?.[1]) {
       report[section] = cleanModelText(xmlMatch[1]);
       continue;
     }
 
-    const startTokens = [`【${section}】`, `<${section}>`, `${section}：`, `${section}:`];
+    const startTokens = [`【${section}】`, `${section}：`, `${section}:`];
     const start = findFirstIndex(raw, startTokens);
     if (start < 0) continue;
     const matchedToken = startTokens.find((token) => raw.indexOf(token) === start) ?? `【${section}】`;
     const contentStart = start + matchedToken.length;
-    const nextTokens = next ? [`【${next}】`, `<${next}>`, `${next}：`, `${next}:`] : [];
+    const nextTokens = next ? [`【${next}】`, `${next}：`, `${next}:`] : [];
     const end = next ? findFirstIndex(raw, nextTokens, contentStart) : raw.length;
     const value = cleanModelText(raw.slice(contentStart, end < 0 ? raw.length : end));
     if (value) report[section] = value;
@@ -213,8 +298,56 @@ function parseSectionedReport(raw: string): Report {
 
   const plainChunks = splitPlainOutput(raw);
   return Object.fromEntries(
-    reportSections.map((section, index) => [section, report[section] || plainChunks[index] || "该部分在模型输出中未充分展开，请重新生成。"]),
+    reportSections.map((section, index) => [
+      section,
+      report[section] || plainChunks[index] || "该部分在模型输出中未充分展开，请重新生成或检查 PDF 文本质量。",
+    ]),
   ) as Report;
+}
+
+function parseJsonReport(raw: string): Report | null {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+    const entries = reportSections.map((section) => {
+      const value = parsed[section];
+      if (typeof value === "string") return [section, cleanModelText(value)];
+      if (Array.isArray(value)) {
+        return [
+          section,
+          value
+            .map((item, index) => `${index + 1}. ${cleanModelText(String(item))}`)
+            .filter((item) => item.length > 6)
+            .join("\n"),
+        ];
+      }
+      if (value && typeof value === "object") {
+        return [
+          section,
+          Object.entries(value as Record<string, unknown>)
+            .map(([key, item]) => `${key}：${Array.isArray(item) ? item.join("；") : String(item)}`)
+            .join("\n"),
+        ];
+      }
+      return [section, ""];
+    });
+    const filled = entries.filter(([, value]) => String(value).length > 20).length;
+    if (filled >= Math.ceil(reportSections.length * 0.75)) {
+      return Object.fromEntries(
+        entries.map(([section, value]) => [
+          section,
+          String(value).length > 20 ? value : "该部分在模型输出中未充分展开，请结合原文和证据线索复核。",
+        ]),
+      ) as Report;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
 }
 
 function findFirstIndex(text: string, tokens: string[], fromIndex = 0) {
@@ -231,7 +364,7 @@ function splitPlainOutput(raw: string) {
     .replace(/<[^>]+>/g, "\n")
     .split(/\n{2,}|(?=【[^】]+】)/)
     .map(cleanModelText)
-    .filter((chunk) => chunk.length > 40 && !chunk.includes("模型未按指定格式返回"))
+    .filter((chunk) => chunk.length > 60 && !chunk.includes("模型未按指定格式返回"))
     .slice(0, reportSections.length);
 }
 
@@ -253,11 +386,11 @@ async function ensureChineseReport(raw: string, models: string[]) {
   if (cjkRatio(raw) > 0.12) return { raw, modelSuffix: "" };
 
   const prompt = `
-请把下面的论文分析完整改写为中文，保留所有【章节标签】，不要新增解释，不要输出 Markdown。
-如果有术语如 Transformer、BLEU、self-attention，可以保留英文术语并给出中文说明。
+请把下面的论文分析完整改写为中文，保留所有 XML 标签，不要新增解释，不要输出 Markdown。
+如果有 Transformer、BLEU、self-attention 等术语，可以保留英文术语并给出中文说明。
 
 原文：
-${raw.slice(0, 6000)}
+${raw.slice(0, 7000)}
 `;
 
   const errors: string[] = [];
@@ -275,20 +408,33 @@ ${raw.slice(0, 6000)}
   return { raw, modelSuffix: "" };
 }
 
-async function generateFullReport(title: string, field: string, paperText: string, evidence: EvidenceItem[], models: string[]) {
-  const dossier = buildPaperDossier(paperText, evidence);
+async function generateFullReport(
+  title: string,
+  field: string,
+  profile: string,
+  paperText: string,
+  evidence: EvidenceItem[],
+  formulas: EvidenceItem[],
+  settings: EvidenceItem[],
+  models: string[],
+) {
+  const dossier = buildPaperDossier(paperText, evidence, formulas, settings);
   const prompt = `
-你是资深论文审稿人和科研导师。请先在心里阅读材料并归纳证据，再输出中文深度分析。
+你是资深论文审稿人、科研导师和复现实验工程师。请先在心里通读材料，建立论文的“问题-方法-证据-结论”链条，再输出中文深度分析。
+
+用户画像：
+${profile || "用户未填写详细画像。默认面向正在做人工智能科研阅读、选题和复现的用户。"}
 
 硬性要求：
 1. 只能基于材料里的信息推断，不要编造论文没有给出的数值。
-2. 不要写“模型未按指定格式返回”“原始输出片段”等系统话术。
-3. 每节 220 到 420 字，必须有具体对象、方法、数据或适用边界。
-4. “实验结果”必须引用自动提取的数据证据里的数据集/指标/数值/对比。
-5. “优劣势”必须分成“优势：...”和“局限：...”。
-6. “个性化建议”要面向正在做人工智能/科研阅读/复现选题的用户。
-7. 严格用下列 XML 标签包裹每节内容，不要 Markdown，不要 JSON：
-${reportSections.map((section) => `<${section}>...</${section}>`).join("\n")}
+2. 每节 360 到 800 字，必须有具体对象、技术细节、证据或适用边界。
+3. “创新点”“核心方法”“实验结果”“优劣势”“复现难度”必须分点表达，可用“一是、二是、三是”或“1. 2. 3.”。
+4. “核心方法”必须说明模块流程、输入输出、关键训练目标、公式/符号含义；若公式线索不足，请明确写“文本抽取中未完整保留公式，需要结合截图复核”。
+5. “实验结果”必须引用自动提取的数据证据里的数据集、指标、数值或对比；如果证据不足，要说明缺口。
+6. “优劣势”必须分成“优势”和“局限”。
+7. “复现难度”必须包含数据、代码/模型、硬件、训练细节、评估协议五个角度。
+8. 只输出一个合法 JSON 对象，不要 Markdown，不要 XML，不要代码块。JSON 必须且只能包含这些中文 key：
+${reportSections.map((section) => `"${section}"`).join(", ")}
 
 论文标题：${title}
 领域分区：${field}
@@ -300,8 +446,10 @@ ${dossier}
   const errors: string[] = [];
   for (const model of models) {
     try {
-      const raw = await callOllama(model, prompt);
-      if (raw.trim().length > 80) {
+      const raw = await callOllama(model, prompt, true);
+      if (raw.trim().length > 120) {
+        const parsedJson = parseJsonReport(raw);
+        if (parsedJson) return { report: parsedJson, model, raw };
         const chinese = await ensureChineseReport(raw, models);
         return { report: parseSectionedReport(chinese.raw), model: `${model}${chinese.modelSuffix}`, raw: chinese.raw };
       }
@@ -314,63 +462,17 @@ ${dossier}
   throw new Error(`All Ollama models failed. ${errors.join(" | ")}`);
 }
 
-async function generateSection(section: string, title: string, field: string, paperText: string, models: string[]) {
-  const prompt = `
-你是严谨的中文科研论文分析助手。请只输出「${section}」这一节正文，不要标题，不要 Markdown。
-
-要求：
-1. 必须基于论文文本中真实出现的信息。
-2. 如果文本没有充分证据，请明确写“文本中未充分提供”，不要编造。
-3. 语言自然、具体，控制在 80 到 160 字。
-4. 即使论文原文是英文，也必须全部使用中文输出。
-5. 论文标题：${title}
-6. 领域分区：${field}
-
-论文文本节选：
-${truncateForPrompt(paperText, 9000)}
-`;
-
-  const errors: string[] = [];
-  for (const model of models) {
-    try {
-      const text = (await callOllama(model, prompt)).trim();
-      if (text.length > 20) return { text, model };
-      errors.push(`${model} returned too little text`);
-    } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  return {
-    text: `模型生成「${section}」失败。错误：${errors.join(" | ")}`,
-    model: models[0] ?? "unknown",
-  };
-}
-
-async function analyzeWithOllama(title: string, field: string, paperText: string): Promise<{ report: Report; model: string; raw: string }> {
+async function analyzeWithOllama(
+  title: string,
+  field: string,
+  profile: string,
+  paperText: string,
+  evidence: EvidenceItem[],
+  formulas: EvidenceItem[],
+  settings: EvidenceItem[],
+): Promise<{ report: Report; model: string; raw: string }> {
   const models = await getCandidateModels();
-  const evidence = extractEvidence(paperText);
-  try {
-    return await generateFullReport(title, field, paperText, evidence, models);
-  } catch {
-    const entries: Array<[string, string]> = [];
-    const usedModels = new Set<string>();
-
-    for (const section of reportSections.slice(0, 4)) {
-      const result = await generateSection(section, title, field, paperText, models);
-      entries.push([section, result.text]);
-      usedModels.add(result.model);
-    }
-    for (const section of reportSections.slice(4)) {
-      entries.push([section, "完整报告生成失败，已生成前四节真实分析。请稍后重试或更换较短 PDF。"]);
-    }
-
-    return {
-      report: Object.fromEntries(entries) as Report,
-      model: [...usedModels].join(", "),
-      raw: JSON.stringify(Object.fromEntries(entries), null, 2),
-    };
-  }
+  return generateFullReport(title, field, profile, paperText, evidence, formulas, settings, models);
 }
 
 export async function POST(request: Request) {
@@ -378,6 +480,7 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const file = formData.get("file");
     const field = String(formData.get("field") ?? "其他");
+    const profile = String(formData.get("profile") ?? "");
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "Missing PDF file." }, { status: 400 });
@@ -388,19 +491,24 @@ export async function POST(request: Request) {
     }
 
     const title = cleanTitle(file.name);
-    const text = await extractPdfText(file);
+    const { text, assets } = await processPdf(file);
     if (!text || text.length < 200) {
       return NextResponse.json({ error: "PDF text extraction produced too little text. Scanned PDFs need OCR support." }, { status: 422 });
     }
 
     const evidence = extractEvidence(text);
-    const analysis = await analyzeWithOllama(title, field, text);
+    const formulas = extractFormulaEvidence(text);
+    const settings = extractSettingEvidence(text);
+    const analysis = await analyzeWithOllama(title, field, profile, text, evidence, formulas, settings);
     return NextResponse.json({
       title,
       field,
       extractedChars: text.length,
       model: analysis.model,
       evidence,
+      formulas,
+      settings,
+      assets,
       report: analysis.report,
     });
   } catch (error) {
