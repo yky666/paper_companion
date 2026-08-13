@@ -128,6 +128,7 @@ export default function Home() {
   const [videoLanguage, setVideoLanguage] = useState<"zh" | "en">("zh");
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const [videoProvider, setVideoProvider] = useState("");
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisMeta, setAnalysisMeta] = useState("");
@@ -215,6 +216,7 @@ export default function Home() {
     setReport(null);
     setVideoUrl(null);
     setVideoBlob(null);
+    setVideoProvider("");
     setAnalysisMeta("");
     setAnalysisError("");
     setEvidence([]);
@@ -304,68 +306,48 @@ export default function Home() {
     utterance.lang = videoLanguage === "zh" ? "zh-CN" : "en-US";
     utterance.rate = 0.95;
     window.speechSynthesis.speak(utterance);
-    showToast("开始语音讲解", "当前使用浏览器语音合成播放，服务端 TTS MP4 会在下一阶段接入。");
+    showToast("开始语音讲解", "当前使用浏览器语音合成试听；生成视频会走服务端 TTS + ffmpeg 输出带声音 MP4。");
   }
 
   async function generateVideo() {
     if (!report) return showToast("还没有报告", "请先上传 PDF 生成分析报告。");
     setIsGeneratingVideo(true);
-    setTaskStatus("正在生成：浏览器端 WebM 讲解视频");
+    setTaskStatus("正在生成：服务端 TTS + ffmpeg 带声音 MP4");
     setActiveNav("视频生成");
-    speakReport();
+    setVideoProvider("");
 
-    const canvas = document.createElement("canvas");
-    canvas.width = 1280;
-    canvas.height = 720;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    try {
+      const response = await fetch("/api/video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: paperTitle,
+          field: selectedField,
+          language: videoLanguage,
+          report,
+          assets,
+        }),
+      });
 
-    const stream = canvas.captureStream(24);
-    const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (event) => chunks.push(event.data);
-    recorder.start();
-
-    const slides = reportSections;
-    let frame = 0;
-    const timer = window.setInterval(() => {
-      const slideIndex = Math.min(Math.floor(frame / 240), slides.length - 1);
-      const slide = slides[slideIndex];
-      ctx.fillStyle = "#f6f7f9";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#1f6feb";
-      ctx.fillRect(0, 0, canvas.width, 96);
-      ctx.fillStyle = "white";
-      ctx.font = "bold 38px Arial";
-      ctx.fillText(videoLanguage === "zh" ? "论文讲解视频" : "Paper Explainer", 56, 62);
-      ctx.fillStyle = "#1d242d";
-      ctx.font = "bold 30px Arial";
-      ctx.fillText(paperTitle.slice(0, 58), 56, 160);
-      ctx.font = "bold 42px Arial";
-      ctx.fillText(slide, 56, 245);
-      ctx.font = "26px Arial";
-      wrapText(ctx, report[slide], 56, 310, 1120, 39, 8);
-      if (assets[slideIndex % Math.max(1, assets.length)]?.dataUrl) {
-        ctx.fillStyle = "#536170";
-        ctx.font = "20px Arial";
-        ctx.fillText(`配图参考：${assets[slideIndex % assets.length].label}，第 ${assets[slideIndex % assets.length].page} 页`, 56, 670);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error ?? "视频生成失败");
       }
-      frame += 1;
-    }, 1000 / 24);
 
-    await new Promise((resolve) => window.setTimeout(resolve, slides.length * 10000));
-    window.clearInterval(timer);
-    recorder.stop();
-    await new Promise((resolve) => {
-      recorder.onstop = resolve;
-    });
-    const blob = new Blob(chunks, { type: "video/webm" });
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoBlob(blob);
-    setVideoUrl(URL.createObjectURL(blob));
-    setIsGeneratingVideo(false);
-    setTaskStatus("视频已生成：可预览与下载");
-    showToast("视频已生成", "WebM 视频已变长；语音讲解当前由浏览器 TTS 播放。");
+      const blob = await response.blob();
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      setVideoBlob(blob);
+      setVideoUrl(URL.createObjectURL(blob));
+      setVideoProvider(response.headers.get("X-TTS-Provider") ?? "server-tts");
+      setTaskStatus("带声音 MP4 已生成：可预览与下载");
+      showToast("带声音 MP4 已生成", "服务端已完成 TTS 音频和 ffmpeg 合成。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      setTaskStatus("视频生成失败：请查看错误信息");
+      showToast("视频生成失败", message);
+    } finally {
+      setIsGeneratingVideo(false);
+    }
   }
 
   return (
@@ -525,7 +507,7 @@ export default function Home() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <h2 className="text-base font-semibold">讲解视频</h2>
-                <p className="mt-1 text-sm text-[#536170]">浏览器端生成较长 WebM 预览；语音讲解使用浏览器 TTS 播放。</p>
+                <p className="mt-1 text-sm text-[#536170]">服务端 TTS 生成讲解音频，并用 ffmpeg 合成为带声音 MP4。</p>
               </div>
               <div className="flex items-center gap-2">
                 <button className={`rounded-md px-3 py-2 text-sm ${videoLanguage === "zh" ? "bg-[#1f6feb] text-white" : "border border-[#c8ced6]"}`} onClick={() => setVideoLanguage("zh")}>中文</button>
@@ -537,7 +519,8 @@ export default function Home() {
             {videoUrl ? (
               <div className="mt-5">
                 <video className="w-full rounded-md border border-[#d9dde3]" controls src={videoUrl} />
-                <button className="mt-3 rounded-md border border-[#c8ced6] px-4 py-2 text-sm" onClick={() => videoBlob && downloadFile(`${paperTitle || "paper-explainer"}.webm`, "video/webm", videoBlob)}>下载 WebM</button>
+                {videoProvider ? <p className="mt-2 text-sm text-[#536170]">音频来源：{videoProvider}</p> : null}
+                <button className="mt-3 rounded-md border border-[#c8ced6] px-4 py-2 text-sm" onClick={() => videoBlob && downloadFile(`${paperTitle || "paper-explainer"}.mp4`, "video/mp4", videoBlob)}>下载 MP4</button>
               </div>
             ) : null}
           </div>
@@ -590,26 +573,4 @@ function EvidenceGroup({ title, items }: { title: string; items: EvidenceItem[] 
       </div>
     </div>
   );
-}
-
-function wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number, maxLines: number) {
-  const words = text.split("");
-  let line = "";
-  let lines = 0;
-  for (const word of words) {
-    const testLine = line + word;
-    if (ctx.measureText(testLine).width > maxWidth && line) {
-      ctx.fillText(line, x, y);
-      line = word;
-      y += lineHeight;
-      lines += 1;
-      if (lines >= maxLines) {
-        ctx.fillText(`${line.slice(0, 36)}...`, x, y);
-        return;
-      }
-    } else {
-      line = testLine;
-    }
-  }
-  ctx.fillText(line, x, y);
 }
